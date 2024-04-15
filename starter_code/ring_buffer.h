@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include "common.h"
 
@@ -42,7 +43,7 @@ struct __attribute__((packed, aligned(64))) ring {
 	/* Producer head - where producers are putting new elements
 	 * It should be always ahead of p_tail - elements between p_tail and
 	 * p_head may not be valid yet (in process of copying data?) */
-	uint32_t p_head; 
+	uint32_t p_head;
 	char pad2[60];
 	/* Consumer tail - first item to be consumed - producers can't write
 	 * any data here - producers can only write before c_tail */

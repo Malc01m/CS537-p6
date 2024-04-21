@@ -1,7 +1,6 @@
 #pragma once
 
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include "common.h"
 
@@ -54,6 +53,8 @@ struct __attribute__((packed, aligned(64))) ring {
 	char pad4[60];
 	/* An array of structs - This is the actual ring */
 	struct buffer_descriptor buffer[RING_SIZE];
+	pthread_mutex_t p_head_lock;
+	pthread_mutex_t c_head_lock;
 };
 
 /*

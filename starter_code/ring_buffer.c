@@ -46,6 +46,16 @@ int init_ring(struct ring *r) {
         r->buffer[i].req_type = 0;
         r->buffer[i].res_off = 0;
     }
+
+    if (pthread_mutex_init(&r->c_head_lock, NULL) != 0) { 
+        printf("Could not initialize mutex lock\n"); 
+        return -1;
+    } 
+    if (pthread_mutex_init(&r->p_head_lock, NULL) != 0) { 
+        printf("Could not initialize mutex lock\n"); 
+        return -1;
+    } 
+
     return 0;
 }
 
@@ -65,12 +75,25 @@ void ring_submit(struct ring *r, struct buffer_descriptor *bd) {
      * https://doc.dpdk.org/guides/prog_guide/ring_lib.html
     */
     
-    uint32_t loc_p_head = r->p_head;
-    uint32_t loc_c_tail = r->c_tail;
-    uint32_t prod_next = next(loc_p_head);
+    printf("Put: Aquiring lock...\n");
+    pthread_mutex_lock(&r->p_head_lock);
+    
+    r->p_head = next(r->p_head);
+    uint32_t p_ind = r->p_head;
 
-    // Still haven't figured out how to use this, might switch to mutex or semaphore
-    atomic_compare_exchange_strong(&(r->p_head), &loc_p_head, &loc_p_head);
+    pthread_mutex_unlock(&r->p_head_lock);
+    printf("Put: Unlocked with next head at %i\n", p_ind);
+
+    // Block on full
+    while (r->c_tail == p_ind) {};
+
+    // Deep copy bd to buffer at prod index
+    r->buffer[p_ind].k = bd->k;
+    r->buffer[p_ind].v = bd->v;
+    r->buffer[p_ind].ready = bd->ready;
+    r->buffer[p_ind].req_type = bd->req_type;
+    r->buffer[p_ind].res_off = bd->res_off;
+
 }
 
 /*
@@ -82,5 +105,24 @@ void ring_submit(struct ring *r, struct buffer_descriptor *bd) {
  * the signature.
 */
 void ring_get(struct ring *r, struct buffer_descriptor *bd) {
-    atomic_compare_exchange_strong();
+
+    printf("Get: Aquiring lock...\n");
+    pthread_mutex_lock(&r->c_head_lock);
+
+    r->c_head = next(r->c_head);
+    uint32_t c_ind = r->c_head;
+
+    pthread_mutex_unlock(&r->c_head_lock);
+    printf("Get: Unlocked with next head at %i\n", c_ind);
+
+    // Block on empty
+    while (r->p_tail == c_ind) {};
+
+    // Deep copy bd to buffer at prod index
+    bd->k = r->buffer[next(r->c_head)].k;
+    bd->v = r->buffer[next(r->c_head)].v;
+    bd->ready = r->buffer[next(r->c_head)].ready;
+    bd->req_type = r->buffer[next(r->c_head)].req_type;
+    bd->res_off = r->buffer[next(r->c_head)].res_off;
+    
 }

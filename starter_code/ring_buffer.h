@@ -55,6 +55,9 @@ struct __attribute__((packed, aligned(64))) ring {
 	struct buffer_descriptor buffer[RING_SIZE];
 	pthread_mutex_t p_head_lock;
 	pthread_mutex_t c_head_lock;
+	pthread_mutex_t p_tail_lock;
+	pthread_mutex_t c_tail_lock;
+	int first_put;
 };
 
 /*

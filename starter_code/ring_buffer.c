@@ -34,11 +34,11 @@ int prev(uint32_t curr) {
  * printed to output by the client program
 */
 int init_ring(struct ring *r) {
-    // Consumer will start off just behind the producer
-	r->c_tail = 0;
-	r->c_head = 0;
-    r->p_tail = 1;
-	r->p_head = 1;
+    // Heads are incremented immediately
+	r->c_tail = (RING_SIZE - 1);
+	r->c_head = (RING_SIZE - 1);
+    r->p_tail = 0;
+	r->p_head = 0;
     for (int i = 0; i < RING_SIZE; i++) {
         r->buffer[i].k = 0;
         r->buffer[i].v = 0;
@@ -46,12 +46,21 @@ int init_ring(struct ring *r) {
         r->buffer[i].req_type = 0;
         r->buffer[i].res_off = 0;
     }
+    r->first_put = 1;
 
     if (pthread_mutex_init(&r->c_head_lock, NULL) != 0) { 
         printf("Could not initialize mutex lock\n"); 
         return -1;
     } 
     if (pthread_mutex_init(&r->p_head_lock, NULL) != 0) { 
+        printf("Could not initialize mutex lock\n"); 
+        return -1;
+    } 
+    if (pthread_mutex_init(&r->c_tail_lock, NULL) != 0) { 
+        printf("Could not initialize mutex lock\n"); 
+        return -1;
+    } 
+    if (pthread_mutex_init(&r->p_tail_lock, NULL) != 0) { 
         printf("Could not initialize mutex lock\n"); 
         return -1;
     } 
@@ -75,17 +84,29 @@ void ring_submit(struct ring *r, struct buffer_descriptor *bd) {
      * https://doc.dpdk.org/guides/prog_guide/ring_lib.html
     */
     
-    printf("Put: Aquiring lock...\n");
+    if (r->first_put) {
+        r->buffer[0].k = bd->k;
+        r->buffer[0].v = bd->v;
+        r->buffer[0].ready = bd->ready;
+        r->buffer[0].req_type = bd->req_type;
+        r->buffer[0].res_off = bd->res_off;
+        r->first_put = 0;
+        return;
+    }
+
+    printf("Put: Aquiring head lock...\n");
     pthread_mutex_lock(&r->p_head_lock);
+
+    // Block on full
+    while (next(r->p_head) == r->c_tail) {
+        printf("Put: Stalling for space at %i\n", next(r->p_head));
+    };
     
     r->p_head = next(r->p_head);
     uint32_t p_ind = r->p_head;
 
     pthread_mutex_unlock(&r->p_head_lock);
-    printf("Put: Unlocked with next head at %i\n", p_ind);
-
-    // Block on full
-    while (r->c_tail == p_ind) {};
+    printf("Put: Unlocked next head at %i\n", p_ind);
 
     // Deep copy bd to buffer at prod index
     r->buffer[p_ind].k = bd->k;
@@ -93,6 +114,19 @@ void ring_submit(struct ring *r, struct buffer_descriptor *bd) {
     r->buffer[p_ind].ready = bd->ready;
     r->buffer[p_ind].req_type = bd->req_type;
     r->buffer[p_ind].res_off = bd->res_off;
+
+    // Block until tail
+    while (next(r->p_tail) != p_ind) {
+        printf("Put: Stalling for tail turn at %i\n", p_ind);
+    }
+
+    printf("Put: Aquiring tail lock at %i...\n", p_ind);
+    pthread_mutex_lock(&r->p_tail_lock);
+
+    r->p_tail = next(r->p_tail);
+
+    pthread_mutex_unlock(&r->p_tail_lock);
+    printf("Put: Incremented tail to %i\n", r->p_tail);
 
 }
 
@@ -106,23 +140,38 @@ void ring_submit(struct ring *r, struct buffer_descriptor *bd) {
 */
 void ring_get(struct ring *r, struct buffer_descriptor *bd) {
 
-    printf("Get: Aquiring lock...\n");
+    printf("Get: Aquiring head lock...\n");
     pthread_mutex_lock(&r->c_head_lock);
+
+    // Block on empty
+    while (r->c_head == r->p_tail) {
+        printf("Get: Stalling for new value at %i\n", next(r->c_head));
+    };
 
     r->c_head = next(r->c_head);
     uint32_t c_ind = r->c_head;
 
     pthread_mutex_unlock(&r->c_head_lock);
-    printf("Get: Unlocked with next head at %i\n", c_ind);
-
-    // Block on empty
-    while (r->p_tail == c_ind) {};
+    printf("Get: Unlocked next head at %i\n", c_ind);
 
     // Deep copy bd to buffer at prod index
-    bd->k = r->buffer[next(r->c_head)].k;
-    bd->v = r->buffer[next(r->c_head)].v;
-    bd->ready = r->buffer[next(r->c_head)].ready;
-    bd->req_type = r->buffer[next(r->c_head)].req_type;
-    bd->res_off = r->buffer[next(r->c_head)].res_off;
+    bd->k = r->buffer[c_ind].k;
+    bd->v = r->buffer[c_ind].v;
+    bd->ready = r->buffer[c_ind].ready;
+    bd->req_type = r->buffer[c_ind].req_type;
+    bd->res_off = r->buffer[c_ind].res_off;
+
+    // Block until tail
+    while (next(r->c_tail) != c_ind) {
+        printf("Get: Stalling for tail turn at %i\n", c_ind);
+    }
+
+    printf("Get: Aquiring tail lock at %i...\n", c_ind);
+    pthread_mutex_lock(&r->c_tail_lock);
+
+    r->c_tail = next(r->c_tail);
+
+    pthread_mutex_unlock(&r->c_tail_lock);
+    printf("Get: Incremented tail to %i\n", r->c_tail);
     
 }

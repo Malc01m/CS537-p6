@@ -1,140 +1,180 @@
 #include <stdio.h>
-#include "common.h"
 #include <stdlib.h>
-#include <string.h>
+#include <unistd.h>
 #include <pthread.h>
+#include <string.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
-typedef struct kv_node
-{
-    key_type key;
-    value_type value;
-    struct kv_node *next;
-} kv_node;
+#include "common.h"
+#include "ring_buffer.h"
 
 typedef struct
 {
-    kv_node **buff;
-    int size;
-    pthread_mutex_t *locks; // Array of locks
-} kv_store;
+    key_type key;
+    value_type value;
+    int is_occupied;
+    pthread_mutex_t lock;
+} HashEntry;
 
-kv_store store;
-
-void init_kv_store(int size)
+typedef struct
 {
-    store.size = size;
-    store.buff = malloc(sizeof(kv_node *) * store.size);
-    store.locks = malloc(sizeof(pthread_mutex_t) * store.size);
+    HashEntry *entries;
+    int size;
+} HashTable;
 
-    for (int i = 0; i < store.size; i++)
+HashTable hashTable;
+pthread_t threads[200];
+
+struct ring *ringBuffer;
+int isRunning = 1;
+
+void initialize_hashTable(int size)
+{
+    hashTable.size = size;
+    hashTable.entries = malloc(size * sizeof(HashEntry));
+
+    for (int i = 0; i < size; i++)
     {
-        store.buff[i] = NULL;
-        pthread_mutex_init(&store.locks[i], NULL);
+        hashTable.entries[i].is_occupied = 0;
+        pthread_mutex_init(&hashTable.entries[i].lock, NULL);
     }
 }
-/**
- *  This function is used to insert a key-value pair into the store. If the key * already exists, it updates the associated value.
- */
+
 void put(key_type k, value_type v)
 {
-    unsigned int index = hash_function(k, store.size);
+    int index = hash_function(k, hashTable.size);
+    int start = index;
 
-    // Critical Zone Enter
-    pthread_mutex_lock(&store.locks[index]);
-
-    kv_node *node = store.buff[index];
-    kv_node *prev = NULL;
-
-    while (node)
+    do
     {
-        if (node->key == k)
+        pthread_mutex_lock(&hashTable.entries[index].lock);
+        if (!hashTable.entries[index].is_occupied || hashTable.entries[index].key == k)
         {
-            node->value = v;
-            pthread_mutex_unlock(&store.locks[index]);
-            return;
+            hashTable.entries[index].key = k;
+            hashTable.entries[index].value = v;
+            hashTable.entries[index].is_occupied = 1;
+            pthread_mutex_unlock(&hashTable.entries[index].lock);
+            break;
         }
-        prev = node;
-        node = node->next;
-    }
-
-    // If there is no key, create a new kv_node
-    kv_node *new = malloc(sizeof(kv_node));
-    new->key = k;
-    new->value = v;
-    new->next = NULL;
-
-    if (prev)
-    {
-        prev->next = new;
-    }
-    else
-    {
-        store.buff[index] = new;
-    }
-
-    // Critical Zone Exit
-    pthread_mutex_unlock(&store.locks[index]);
+        pthread_mutex_unlock(&hashTable.entries[index].lock);
+        index = (index + 1) % hashTable.size;
+    } while (index != start);
 }
 
-/**
- * This function is used to retrieve the value associated with a given key from * the store.
- *
- */
 value_type get(key_type k)
 {
-    unsigned int index = hash_function(k, store.size);
+    int index = hash_function(k, hashTable.size);
+    int start = index;
+    value_type v = 0;
 
-    // Critical Zone Enter
-    pthread_mutex_lock(&store.locks[index]);
-
-    kv_node *node = store.buff[index];
-
-    while (node)
+    do
     {
-        if (node->key == k)
+        pthread_mutex_lock(&hashTable.entries[index].lock);
+        if (hashTable.entries[index].is_occupied && hashTable.entries[index].key == k)
         {
-            pthread_mutex_unlock(&store.locks[index]);
-            return node->value;
+            v = hashTable.entries[index].value;
+            pthread_mutex_unlock(&hashTable.entries[index].lock);
+            break;
         }
-        node = node->next;
+        pthread_mutex_unlock(&hashTable.entries[index].lock);
+        index = (index + 1) % hashTable.size;
+    } while (index != start && hashTable.entries[index].is_occupied);
+
+    return v;
+}
+
+void *server_thread(void *arg)
+{
+    struct buffer_descriptor bd;
+    char *shared_mem_start = (char *)ringBuffer;
+
+    while (isRunning)
+    {
+        ring_get(ringBuffer, &bd);
+        if (bd.req_type == PUT)
+        {
+            put(bd.k, bd.v);
+        }
+        else if (bd.req_type == GET)
+        {
+            bd.v = get(bd.k);
+        }
+
+        struct buffer_descriptor *result = (struct buffer_descriptor *)(shared_mem_start + bd.res_off);
+        memcpy(result, &bd, sizeof(struct buffer_descriptor));
+        result->ready = 1;
     }
-
-    // Critical Zone Exit
-    pthread_mutex_unlock(&store.locks[index]);
-
-    // If the key is not found, it returns 0.
-    return 0;
+    return NULL;
 }
 
 int main(int argc, char *argv[])
 {
-    int threads = -1;
-    int hashtableSize = -1;
+    int num_threads = 0;
+    int table_size = 200;
+    char *shm_file = "shmem_file";
+    int fd = open(shm_file, O_RDWR);
+    struct stat file_stat;
 
+    if (fd < 0)
+    {
+        printf("ERROR: Cannot open shared memory.\n");
+        return EXIT_FAILURE;
+    }
+    if (fstat(fd, &file_stat) == -1)
+    {
+        perror("ERROR: Cannot get stats\n");
+        return EXIT_FAILURE;
+    }
+    void *shared = mmap(NULL, file_stat.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+
+    if (shared == MAP_FAILED)
+    {
+        perror("Failed to map shared memory");
+        return EXIT_FAILURE;
+    }
+
+    ringBuffer = (struct ring *)shared;
     for (int i = 1; i < argc; i++)
     {
         if (strcmp(argv[i], "-n") == 0 && i + 1 < argc)
         {
-            threads = atoi(argv[++i]);
+            num_threads = atoi(argv[++i]);
         }
         else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc)
         {
-            hashtableSize = atoi(argv[++i]);
+            table_size = atoi(argv[++i]);
         }
         else
         {
             printf("Incorrect usage.\n");
-            exit(1);
+            exit(EXIT_FAILURE);
         }
     }
 
-    // Makes sure both values are filled.
-    if (threads == -1 || hashtableSize == -1)
+    if (num_threads <= 0 || table_size <= 0)
     {
-        printf("Incorrect usage. Both values need to be filled\n");
+        printf("ERROR: values are negative or not all values completed\n");
+        exit(EXIT_FAILURE);
     }
 
-    init_kv_store(hashtableSize);
+    initialize_hashTable(table_size);
+
+    for (int i = 0; i < num_threads; i++)
+    {
+        if (pthread_create(&threads[i], NULL, server_thread, NULL) != 0)
+        {
+            perror("Failed to create thread");
+            return EXIT_FAILURE;
+        }
+    }
+
+    for (int i = 0; i < num_threads; i++)
+    {
+        pthread_join(threads[i], NULL);
+    }
 
     return 0;
 }

@@ -139,13 +139,27 @@ int main(int argc, char *argv[])
     ringBuffer = (struct ring *)shared;
     for (int i = 1; i < argc; i++)
     {
-        if (strcmp(argv[i], "-n") == 0 && i + 1 < argc)
+        if ((argv[i][0] == '-') && (argv[i][1] == 'n'))
         {
-            num_threads = atoi(argv[++i]);
+            int num_len = 0;
+            while (argv[i][num_len++] != '\0') {}
+            char* num = malloc(sizeof(char) * num_len);
+            num = strncpy(num, argv[i], num_len);
+            char* num_orig = num;
+            strsep(&num, " ");
+            num_threads = atoi(num);
+            free(num_orig);
         }
-        else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc)
+        else if ((argv[i][0] == '-') && (argv[i][1] == 's'))
         {
-            table_size = atoi(argv[++i]);
+            int num_len = 0;
+            while (argv[i][num_len++] != '\0') {}
+            char* num = malloc(sizeof(char) * num_len);
+            num = strncpy(num, argv[i], num_len);
+            char* num_orig = num;
+            strsep(&num, " ");
+            table_size = atoi(num);
+            free(num_orig);
         }
         else
         {

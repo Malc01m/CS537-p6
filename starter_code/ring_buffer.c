@@ -35,8 +35,8 @@ int prev(uint32_t curr) {
 */
 int init_ring(struct ring *r) {
     // Heads are incremented immediately
-	r->c_tail = (RING_SIZE - 1);
-	r->c_head = (RING_SIZE - 1);
+	r->c_tail = 0;
+	r->c_head = 0;
     r->p_tail = 0;
 	r->p_head = 0;
     for (int i = 0; i < RING_SIZE; i++) {
@@ -99,14 +99,16 @@ void ring_submit(struct ring *r, struct buffer_descriptor *bd) {
 
     // Block on full
     while (next(r->p_head) == r->c_tail) {
-        printf("Put: Stalling for space at %i\n", next(r->p_head));
+        printf("Put: Stalling for space at %i for buffer with key %i value %i\n", 
+            next(r->p_head), bd->k, bd->v);
     };
     
     r->p_head = next(r->p_head);
     uint32_t p_ind = r->p_head;
 
     pthread_mutex_unlock(&r->p_head_lock);
-    printf("Put: Unlocked next head at %i\n", p_ind);
+    printf("Put: Unlocked next head at %i for buffer with key %i value %i\n", 
+        r->p_tail, bd->k, bd->v);
 
     // Deep copy bd to buffer at prod index
     r->buffer[p_ind].k = bd->k;
@@ -117,16 +119,19 @@ void ring_submit(struct ring *r, struct buffer_descriptor *bd) {
 
     // Block until tail
     while (next(r->p_tail) != p_ind) {
-        printf("Put: Stalling for tail turn at %i\n", p_ind);
+        printf("Put: Stalling for tail turn at %i for buffer with key %i value %i\n", 
+        r->p_tail, bd->k, bd->v);
     }
 
-    printf("Put: Aquiring tail lock at %i...\n", p_ind);
+    printf("Put: Aquiring tail lock at %i for buffer with key %i value %i\n", 
+        r->p_tail, bd->k, bd->v);
     pthread_mutex_lock(&r->p_tail_lock);
 
     r->p_tail = next(r->p_tail);
 
     pthread_mutex_unlock(&r->p_tail_lock);
-    printf("Put: Incremented tail to %i\n", r->p_tail);
+    printf("Put: Incremented tail to %i for buffer with key %i value %i\n", 
+        r->p_tail, bd->k, bd->v);
 
 }
 
@@ -140,19 +145,21 @@ void ring_submit(struct ring *r, struct buffer_descriptor *bd) {
 */
 void ring_get(struct ring *r, struct buffer_descriptor *bd) {
 
-    printf("Get: Aquiring head lock...\n");
+    printf("Get: Aquiring head lock for buffer with key %i value %i\n", bd->k, bd->v);
     pthread_mutex_lock(&r->c_head_lock);
 
     // Block on empty
     while (r->c_head == r->p_tail) {
-        printf("Get: Stalling for new value at %i\n", next(r->c_head));
+        printf("Get: Stalling for new value at %i for buffer with key %i value %i\n", 
+            next(r->c_head), bd->k, bd->v);
     };
 
     r->c_head = next(r->c_head);
     uint32_t c_ind = r->c_head;
 
     pthread_mutex_unlock(&r->c_head_lock);
-    printf("Get: Unlocked next head at %i\n", c_ind);
+    printf("Get: Unlocked next head at %i for buffer with key %i value %i\n", 
+        c_ind, bd->k, bd->v);
 
     // Deep copy bd to buffer at prod index
     bd->k = r->buffer[c_ind].k;
@@ -163,15 +170,18 @@ void ring_get(struct ring *r, struct buffer_descriptor *bd) {
 
     // Block until tail
     while (next(r->c_tail) != c_ind) {
-        printf("Get: Stalling for tail turn at %i\n", c_ind);
+        printf("Get: Stalling for tail turn at %i for buffer with key %i value %i\n", 
+            c_ind, bd->k, bd->v);
     }
 
-    printf("Get: Aquiring tail lock at %i...\n", c_ind);
+    printf("Get: Aquiring tail lock at %i for buffer with key %i value %i\n", 
+        c_ind, bd->k, bd->v);
     pthread_mutex_lock(&r->c_tail_lock);
 
     r->c_tail = next(r->c_tail);
 
     pthread_mutex_unlock(&r->c_tail_lock);
-    printf("Get: Incremented tail to %i\n", r->c_tail);
+    printf("Get: Incremented tail to %i for buffer with key %i value %i\n", 
+        r->c_tail, bd->k, bd->v);
     
 }
